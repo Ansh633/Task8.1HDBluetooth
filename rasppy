@@ -1,0 +1,90 @@
+import asyncio
+import gpiod
+from bleak import BleakScanner, BleakClient
+
+# UUIDs for BLE service and characteristic on the Arduino Nano 33 IoT
+LED_UUID = "7546d197-156d-48a1-848b-7a27a4a5dc3a"  # BLE Service UUID
+CHAR_UUID = "ad1ad0d9-a4a4-4879-9d02-ec57410dab48"  # BLE Characteristic UUID
+
+# Set up GPIO for controlling an external LED
+# `gpiochip4` is the GPIO chip, and pin 17 is used for the LED
+chip = gpiod.Chip('gpiochip4')  # Access GPIO chip
+line = chip.get_line(17)        # Specify GPIO line (pin number)
+# Request the line as an output with a consumer name for identification
+line.request(consumer="led_controller", type=gpiod.LINE_REQ_DIR_OUT)
+
+async def connect_to_device(ble_device):
+    """
+    Connects to the specified BLE device and controls the LED based on
+    the light intensity data received from the device's BLE characteristic.
+
+    Args:
+        ble_device: The BLE device object representing the Arduino Nano 33 IoT.
+    """
+    try:
+        # Attempt to connect to the BLE device with a timeout for connection
+        async with BleakClient(ble_device, timeout=10.0) as client:
+            print("Connected to BLE device")
+
+            while True:
+                try:
+                    # Read the current light intensity value from the BLE characteristic
+                    light_intensity = await client.read_gatt_char(CHAR_UUID)
+                    
+                    # Convert the received bytes to an integer
+                    intensity_value = int.from_bytes(light_intensity, byteorder='little')
+
+                    # Control the LED based on a light intensity threshold (100 in this case)
+                    # If intensity is above threshold, turn LED on; otherwise, turn it off
+                    if intensity_value > 100:
+                        line.set_value(1)  # Set GPIO to high to turn on LED
+                    else:
+                        line.set_value(0)  # Set GPIO to low to turn off LED
+
+                    # Print the intensity and current LED state for debugging
+                    print(f"Light Intensity: {intensity_value}, LED state: {line.get_value()}")
+                    
+                    # Pause for a moment before the next read to avoid overwhelming the device
+                    await asyncio.sleep(1)  # Adjust frequency of reading as needed
+
+                except Exception as read_error:
+                    # If there’s an error in reading the characteristic, exit the loop
+                    print(f"Error reading characteristic: {read_error}")
+                    break
+
+    except Exception as e:
+        # Handle connection errors and print them for debugging
+        print(f"Error connecting to device: {e}")
+
+async def main():
+    """
+    Main function to continuously scan for the specified BLE device by name.
+    When the device is found, attempts a connection and controls the LED based
+    on received data. If the device disconnects or an error occurs, it retries.
+    """
+    while True:
+        print("Searching for Arduino Nano 33 IoT 'LED' device, please wait...")
+
+        # Perform a BLE scan for available devices with a 5-second timeout
+        devices = await BleakScanner.discover(timeout=5)
+
+        # Iterate over each discovered device
+        for ble_device in devices:
+            # Check if the device name matches the expected name containing 'LED'
+            if ble_device.name and 'LED' in ble_device.name:
+                print("Device found:", ble_device.name)
+                
+                # Try connecting to the device and controlling the LED
+                await connect_to_device(ble_device)
+                
+                # After disconnecting or an error, wait before trying to reconnect
+                print("Attempting to reconnect in 10 seconds...")
+                await asyncio.sleep(10)
+
+        # If no matching device was found, wait before scanning again
+        print("No device found, scanning again in 5 seconds...")
+        await asyncio.sleep(5)
+
+# If the script is run directly, execute the main function in an async event loop
+if __name__ == "__main__":
+    asyncio.run(main())
